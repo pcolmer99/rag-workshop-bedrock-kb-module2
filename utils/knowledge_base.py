@@ -223,8 +223,11 @@ class BedrockKnowledgeBase:
                 self.s3_client.head_bucket(Bucket=bucket_name)
                 existing_buckets.append(bucket_name)
                 print(f'Bucket {bucket_name} already exists - retrieving it!')
-            except ClientError:
-                pass
+            except ClientError as e:
+                # Only a 404 means "does not exist, so create it". A 403 means the name is
+                # taken by another account, which must not be reported as a missing bucket.
+                if e.response["Error"]["Code"] not in ("404", "NoSuchBucket"):
+                    raise
 
         buckets_to_create = [b for b in buckets_to_check if b not in existing_buckets]
 
@@ -703,13 +706,13 @@ class BedrockKnowledgeBase:
         print('\nCollection successfully created:')
         pp.pprint(response["collectionDetails"])
 
-        try:
-            self.create_oss_policy_attach_bedrock_execution_role(collection_id)
-            print("Sleeping for a minute to ensure data access rules have been enforced")
-            interactive_sleep(60)
-        except Exception as e:
-            print("Policy already exists")
-            pp.pprint(e)
+        # create_oss_policy_attach_bedrock_execution_role already handles an existing
+        # policy, so anything reaching here is a real failure (for example AccessDenied
+        # or throttling on attach_role_policy). Letting it pass would leave the role
+        # without aoss:APIAccessAll and surface later as a 403 during ingestion.
+        self.create_oss_policy_attach_bedrock_execution_role(collection_id)
+        print("Sleeping for a minute to ensure data access rules have been enforced")
+        interactive_sleep(60)
 
         return host, collection, collection_id, collection_arn
 
