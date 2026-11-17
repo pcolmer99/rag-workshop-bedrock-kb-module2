@@ -41,6 +41,12 @@ multimodal/rag/listings.json
 multimodal/rag/*.tar
 multimodal/rag/__pycache__/
 
+# Ignore Python bytecode caches and test runner caches anywhere in the repo
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
 
 # ignore cdk-related directories
 agents-for-bedrock/agent-blueprint-templates/node_modules
