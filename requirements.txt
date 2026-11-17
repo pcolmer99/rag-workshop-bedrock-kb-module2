@@ -17,5 +17,4 @@ numpy >= 2.0
 pandas >= 2.2
 pyarrow >= 17.0
 datasets >= 3.0.0
-haystack-ai
 ragas == 0.1.9
