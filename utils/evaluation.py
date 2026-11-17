@@ -13,7 +13,7 @@ from ragas import evaluate
 class KnowledgeBasesEvaluations:    
     def __init__(self, model_id_eval: str, model_id_generation: str, metrics: list, questions:list, ground_truth:list, KB_ID:str):
         self.model_id_eval = model_id_eval
-        self.model_id_generation = model_id_eval
+        self.model_id_generation = model_id_generation
         self.bedrock_config = Config(connect_timeout=120, read_timeout=120, retries={'max_attempts': 0})
     
         self.bedrock_client = boto3.client('bedrock-runtime')
@@ -31,7 +31,7 @@ class KnowledgeBasesEvaluations:
             retriever=self.retriever, 
             return_source_documents=True)
         
-        self.bedrock_embeddings = BedrockEmbeddings(model_id="amazon.titan-embed-text-v1",
+        self.bedrock_embeddings = BedrockEmbeddings(model_id="amazon.titan-embed-text-v2:0",
                                                     client=self.bedrock_client)
         self.evaluation_results = []
         self.evaluation_metrics = metrics
@@ -78,9 +78,9 @@ class KnowledgeBasesEvaluations:
             ground_truth = item['ground_truth']
             
             try:
-                # Evaluate
+                # Evaluate only this sample, not the whole dataset
                 result = evaluate(
-                    dataset = dataset, 
+                    dataset = dataset.select([idx]), 
                     metrics=self.evaluation_metrics,
                     llm=self.llm_for_evaluation,
                     embeddings=self.bedrock_embeddings,

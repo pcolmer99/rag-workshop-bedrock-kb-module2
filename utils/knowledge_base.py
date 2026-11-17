@@ -250,16 +250,29 @@ class BedrockKnowledgeBase:
         z.close()
         zip_content = s.getvalue()
 
-        # Create Lambda Function
-        lambda_function = self.lambda_client.create_function(
-            FunctionName=self.lambda_function_name,
-            Runtime='python3.12',
-            Timeout=60,
-            Role=lambda_iam_role['Role']['Arn'],
-            Code={'ZipFile': zip_content},
-            Handler='lambda_function.lambda_handler'
-        )
-        return lambda_function
+        # Create Lambda Function. A newly created IAM role can take a while to become
+        # assumable by Lambda, so retry while Lambda reports the role cannot be assumed.
+        max_attempts = 6
+        for attempt in range(1, max_attempts + 1):
+            try:
+                lambda_function = self.lambda_client.create_function(
+                    FunctionName=self.lambda_function_name,
+                    Runtime='python3.12',
+                    Timeout=60,
+                    Role=lambda_iam_role['Role']['Arn'],
+                    Code={'ZipFile': zip_content},
+                    Handler='lambda_function.lambda_handler'
+                )
+                return lambda_function
+            except self.lambda_client.exceptions.ResourceConflictException:
+                # Function already exists (e.g. the cell was re-run): reuse it
+                print(f"Lambda function {self.lambda_function_name} already exists - retrieving it!")
+                return self.lambda_client.get_function(FunctionName=self.lambda_function_name)['Configuration']
+            except self.lambda_client.exceptions.InvalidParameterValueException:
+                if attempt == max_attempts:
+                    raise
+                print(f"Lambda role not assumable yet (attempt {attempt}/{max_attempts}), retrying in 10 seconds...")
+                time.sleep(10)
 
     def create_lambda_role(self):
         lambda_function_role = f'{self.kb_name}-lambda-role-{self.suffix}'
@@ -321,17 +334,20 @@ class BedrockKnowledgeBase:
             ]
         }
 
-        # Create the policy
+        # Create the policy (reuse it if it already exists, e.g. on a re-run)
         s3_access_policy_json = json.dumps(s3_access_policy)
-        s3_access_policy_response = self.iam_client.create_policy(
-            PolicyName=s3_access_policy_name,
-            PolicyDocument= s3_access_policy_json
-        )
+        try:
+            s3_access_policy_arn = self.iam_client.create_policy(
+                PolicyName=s3_access_policy_name,
+                PolicyDocument= s3_access_policy_json
+            )['Policy']['Arn']
+        except self.iam_client.exceptions.EntityAlreadyExistsException:
+            s3_access_policy_arn = f"arn:aws:iam::{self.account_number}:policy/{s3_access_policy_name}"
 
         # Attach the policy to the Lambda function's role
         self.iam_client.attach_role_policy(
             RoleName=lambda_function_role,
-            PolicyArn=s3_access_policy_response['Policy']['Arn']
+            PolicyArn=s3_access_policy_arn
         )
         return lambda_iam_role
 
@@ -469,6 +485,7 @@ class BedrockKnowledgeBase:
                             "lambda:InvokeFunction"
                         ],
                         "Resource": [
+                            f"arn:aws:lambda:{self.region_name}:{self.account_number}:function:{self.lambda_function_name}",
                             f"arn:aws:lambda:{self.region_name}:{self.account_number}:function:{self.lambda_function_name}:*"
                         ],
                         "Condition": {
@@ -525,24 +542,30 @@ class BedrockKnowledgeBase:
         if self.vector_store == "NEPTUNE_ANALYTICS":
             policies.append((self.neptune_policy_name, neptune_policy_name, 'Policy for Neptune Vector Store'))
             
-        # create bedrock execution role
-        bedrock_kb_execution_role = self.iam_client.create_role(
-            RoleName=self.kb_execution_role_name,
-            AssumeRolePolicyDocument=json.dumps(assume_role_policy_document),
-            Description='Amazon Bedrock Knowledge Base Execution Role for accessing OSS, secrets manager and S3',
-            MaxSessionDuration=3600
-        )
+        # create bedrock execution role (retrieve it if it already exists, e.g. on a re-run)
+        try:
+            bedrock_kb_execution_role = self.iam_client.create_role(
+                RoleName=self.kb_execution_role_name,
+                AssumeRolePolicyDocument=json.dumps(assume_role_policy_document),
+                Description='Amazon Bedrock Knowledge Base Execution Role for accessing OSS, secrets manager and S3',
+                MaxSessionDuration=3600
+            )
+        except self.iam_client.exceptions.EntityAlreadyExistsException:
+            bedrock_kb_execution_role = self.iam_client.get_role(RoleName=self.kb_execution_role_name)
 
         # create and attach the policies to the bedrock execution role
         for policy_name, policy_document, description in policies:
-            policy = self.iam_client.create_policy(
-                PolicyName=policy_name,
-                PolicyDocument=json.dumps(policy_document),
-                Description=description,
-            )
+            try:
+                policy_arn = self.iam_client.create_policy(
+                    PolicyName=policy_name,
+                    PolicyDocument=json.dumps(policy_document),
+                    Description=description,
+                )["Policy"]["Arn"]
+            except self.iam_client.exceptions.EntityAlreadyExistsException:
+                policy_arn = f"arn:aws:iam::{self.account_number}:policy/{policy_name}"
             self.iam_client.attach_role_policy(
                 RoleName=bedrock_kb_execution_role["Role"]["RoleName"],
-                PolicyArn=policy["Policy"]["Arn"]
+                PolicyArn=policy_arn
             )
 
         return bedrock_kb_execution_role
@@ -876,6 +899,7 @@ class BedrockKnowledgeBase:
                 storageConfiguration=storage_configuration,
             )
             kb = create_kb_response["knowledgeBase"]
+            kb_id = kb["knowledgeBaseId"]
             pp.pprint(kb)
         except self.bedrock_agent_client.exceptions.ConflictException:
             kbs = self.bedrock_agent_client.list_knowledge_bases(maxResults=100)
@@ -899,6 +923,7 @@ class BedrockKnowledgeBase:
                 knowledgeBaseId=kb['knowledgeBaseId']
             )
             ds = get_ds_response["dataSource"]
+            ds_list = [ds]
             pp.pprint(ds)
         return kb, ds_list
     
@@ -1127,6 +1152,7 @@ class BedrockKnowledgeBase:
                 print(f"job {idx+1} started successfully\n")
                 # pp.pprint(job)
                 while job['status'] not in ["COMPLETE", "FAILED", "STOPPED"]:
+                    time.sleep(10)
                     get_job_response = self.bedrock_agent_client.get_ingestion_job(
                         knowledgeBaseId=self.knowledge_base['knowledgeBaseId'],
                         dataSourceId=self.data_source[idx]["dataSourceId"],
@@ -1170,13 +1196,21 @@ class BedrockKnowledgeBase:
             # delete knowledge base and data source.
             
             # Delete knowledge base and data sources
+            kb_id = self.knowledge_base['knowledgeBaseId']
             try:
-                # First delete all data sources
+                # First delete all data sources. Deletion is asynchronous and uses the KB
+                # execution role to remove vectors, so wait for each one to finish.
                 for ds in self.data_source:
                     try:
                         self.bedrock_agent_client.delete_data_source(
                             dataSourceId=ds["dataSourceId"],
-                            knowledgeBaseId=self.knowledge_base['knowledgeBaseId']
+                            knowledgeBaseId=kb_id
+                        )
+                        print(f"Deleting data source {ds['dataSourceId']}...")
+                        self._wait_until_deleted(
+                            lambda: self.bedrock_agent_client.get_data_source(
+                                dataSourceId=ds["dataSourceId"], knowledgeBaseId=kb_id)["dataSource"]["status"],
+                            f"data source {ds['dataSourceId']}"
                         )
                         print(f"Deleted data source {ds['dataSourceId']}")
                     except self.bedrock_agent_client.exceptions.ResourceNotFoundException:
@@ -1184,9 +1218,12 @@ class BedrockKnowledgeBase:
                     except Exception as e:
                         print(f"Error deleting data source {ds['dataSourceId']}: {str(e)}")
 
-                # Then delete the knowledge base
-                self.bedrock_agent_client.delete_knowledge_base(
-                    knowledgeBaseId=self.knowledge_base['knowledgeBaseId']
+                # Then delete the knowledge base and wait for it to go
+                self.bedrock_agent_client.delete_knowledge_base(knowledgeBaseId=kb_id)
+                self._wait_until_deleted(
+                    lambda: self.bedrock_agent_client.get_knowledge_base(
+                        knowledgeBaseId=kb_id)["knowledgeBase"]["status"],
+                    f"knowledge base {kb_id}"
                 )
                 print("======== Knowledge base and all data sources deleted =========")
             
@@ -1212,23 +1249,25 @@ class BedrockKnowledgeBase:
 
             # delete vector index and collection from vector store
             if self.vector_store=="OPENSEARCH_SERVERLESS":
-                try:
-                    self.aoss_client.delete_collection(id=self.collection_id)
-                    self.aoss_client.delete_access_policy(
-                        type="data",
-                        name=self.access_policy_name
-                    )
-                    self.aoss_client.delete_security_policy(
-                        type="network",
-                        name=self.network_policy_name
-                    )
-                    self.aoss_client.delete_security_policy(
-                        type="encryption",
-                        name=self.encryption_policy_name
-                    )
+                # Delete each item separately so one failure does not leave the rest behind
+                aoss_deletes = [
+                    ("collection", lambda: self.aoss_client.delete_collection(id=self.collection_id)),
+                    ("data access policy", lambda: self.aoss_client.delete_access_policy(
+                        type="data", name=self.access_policy_name)),
+                    ("network policy", lambda: self.aoss_client.delete_security_policy(
+                        type="network", name=self.network_policy_name)),
+                    ("encryption policy", lambda: self.aoss_client.delete_security_policy(
+                        type="encryption", name=self.encryption_policy_name)),
+                ]
+                failed = False
+                for label, delete_call in aoss_deletes:
+                    try:
+                        delete_call()
+                    except Exception as e:
+                        failed = True
+                        print(f"Error deleting OpenSearch Serverless {label}: {e}")
+                if not failed:
                     print("======== Vector Index, collection and associated policies deleted =========")
-                except Exception as e:
-                    print(e)
             else: 
                 try: 
                     # disable delete protection
@@ -1246,6 +1285,24 @@ class BedrockKnowledgeBase:
                     print(e)
 
             
+    def _wait_until_deleted(self, get_status, description, poll_seconds=10, timeout_seconds=600):
+        """
+        Poll get_status() until the resource is gone (ResourceNotFoundException).
+        Raises if the resource reports DELETE_UNSUCCESSFUL or the timeout passes.
+        """
+        waited = 0
+        while True:
+            try:
+                status = get_status()
+            except self.bedrock_agent_client.exceptions.ResourceNotFoundException:
+                return
+            if status == "DELETE_UNSUCCESSFUL":
+                raise RuntimeError(f"Deletion of {description} failed (DELETE_UNSUCCESSFUL)")
+            if waited >= timeout_seconds:
+                raise TimeoutError(f"Timed out after {timeout_seconds}s waiting for {description} to be deleted")
+            time.sleep(poll_seconds)
+            waited += poll_seconds
+
     def delete_iam_roles_and_policies(self):
         for role_name in self.roles:
             print(f"Found role {role_name}")
