@@ -56,3 +56,8 @@ agents-for-bedrock/agent-blueprint-templates/.cdk.staging
 agents-for-bedrock/agent-blueprint-templates/.package-lock.json
 agents-for-bedrock/agent-blueprint-templates/yarn.lock
 
+
+# Kept locally, not published: offline test suites and the synthetic dataset
+/02 - Automated Tests for Kiro/
+/utils - Automated Tests for Kiro/
+/synthetic_dataset/

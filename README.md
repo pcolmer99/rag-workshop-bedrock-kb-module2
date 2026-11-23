@@ -1,8 +1,7 @@
 # RAG workshop: optimising accuracy of retrieved results (Amazon Bedrock Knowledge Bases)
 
-Module 2 of the Amazon Bedrock Knowledge Bases RAG workshop, with the defects fixed and
-an offline test suite added. The other workshop modules have been removed to keep this
-repository focused.
+Module 2 of the Amazon Bedrock Knowledge Bases RAG workshop, with the defects fixed. The
+other workshop modules have been removed to keep this repository focused.
 
 ## Contents
 
@@ -11,15 +10,18 @@ repository focused.
 | `02-optimizing-accuracy-retrieved-results/` | The six workshop notebooks |
 | `utils/knowledge_base.py` | `BedrockKnowledgeBase`, the helper every notebook uses to build and tear down a knowledge base |
 | `utils/evaluation.py` | `KnowledgeBasesEvaluations`, a ragas evaluation wrapper |
-| `synthetic_dataset/` | The synthetic Octank Financial 10-K the notebooks ingest (CC0-1.0) |
-| `02 - Automated Tests for Kiro/` | 213 tests: one per notebook code cell, plus behaviour checks |
-| `utils - Automated Tests for Kiro/` | 64 unit tests for the `utils/` helpers |
 | `requirements.txt` | Notebook dependencies |
 
 ## The notebooks
 
 Each builds a knowledge base, ingests the 10-K, queries it, then deletes everything it
 created. Run them in a Jupyter environment with AWS credentials available.
+
+**Before you run them:** the notebooks upload the synthetic Octank Financial 10-K from a
+`synthetic_dataset/` folder at the repository root, which is not included here. Copy that
+folder from the upstream
+[aws-samples/rag-workshop-amazon-bedrock-knowledge-bases](https://github.com/aws-samples/rag-workshop-amazon-bedrock-knowledge-bases)
+repository (it is licensed CC0-1.0 there).
 
 | Notebook | Topic |
 |---|---|
@@ -38,27 +40,10 @@ Region does not support it.
 **Cost note:** the notebooks create OpenSearch Serverless collections, which bill while
 they exist. Run the clean-up cells at the end of each notebook.
 
-## Running the tests
-
-The tests run offline against an AWS emulator. They need no AWS account and create
-nothing in AWS, so they are safe to run on every change.
-
-```powershell
-python -m venv .venv
-.venv\Scripts\pip install -r "02 - Automated Tests for Kiro\requirements-test.txt"
-
-.venv\Scripts\python -m pytest "02 - Automated Tests for Kiro"
-.venv\Scripts\python -m pytest "utils - Automated Tests for Kiro"
-```
-
-Each folder also has a `mutation_check.py` that reverts every fix one at a time and
-confirms a test catches it. See each folder's README for what is covered and for the
-limits of an emulated AWS.
-
 ## What was fixed
 
-Sixteen defects in the notebooks and `utils/`, each guarded by a test. `git log` carries
-the detail; the short version:
+Sixteen defects in the notebooks and `utils/`. `git log` carries the detail; the short
+version:
 
 - A results table that compared a configuration against itself
 - A notebook left on an end-of-life model and the old foundation-model ARN format
@@ -67,9 +52,8 @@ the detail; the short version:
 - An ingestion poll with no delay, which risked throttling and let queries run against a half-ingested index
 - Clean-up that deleted an IAM role while the deletion using it was still in flight
 
-Two known defects are recorded but deliberately not fixed, because they sit on code
-paths these notebooks never take. They are marked `xfail` with the reason and the fix in
-`utils - Automated Tests for Kiro`.
+Two further defects in `utils/` are known but deliberately not fixed, because they sit on
+code paths these notebooks never take.
 
 ## Provenance and licence
 
@@ -78,6 +62,3 @@ Forked from
 and licensed MIT No Attribution (MIT-0), as in the upstream repository. The `LICENSE`
 file was present in the upstream initial commit and removed by a later commit there; it
 has been restored here.
-
-The synthetic dataset in `synthetic_dataset/` is separately licensed CC0-1.0. See
-`synthetic_dataset/NOTICE` and `synthetic_dataset/README.md`.
